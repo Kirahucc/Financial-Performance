@@ -372,7 +372,63 @@ if page == "Quick View":
 
     st.caption("Tip: Use the left menu to open any page in full detail.")
 
+# ---- Cash Allocation (Overhead / Risk / Projects) ----
+    st.subheader("Cash Allocation of Bank Balance")
 
+    # Defaults once per session
+    if "alloc_overhead" not in st.session_state:
+        st.session_state.alloc_overhead = round(cash_balance * 0.40, 2)
+        st.session_state.alloc_risk     = round(cash_balance * 0.20, 2)
+        st.session_state.alloc_projects = round(cash_balance * 0.40, 2)
+
+    c_left, c_right = st.columns([1.1, 1.0], gap="large")
+
+    with c_right:
+        st.caption(f"Target total: **₦{cash_balance:,.2f}**")
+        a_over = st.number_input("Overhead (₦)", min_value=0.0, value=float(st.session_state.alloc_overhead), step=50_000.0, key="alloc_overhead_in")
+        a_risk = st.number_input("Risk (₦)",     min_value=0.0, value=float(st.session_state.alloc_risk),     step=50_000.0, key="alloc_risk_in")
+        a_proj = st.number_input("Projects (₦)", min_value=0.0, value=float(st.session_state.alloc_projects), step=50_000.0, key="alloc_projects_in")
+
+        # Auto-normalize to match the fixed cash balance
+        entered_sum = a_over + a_risk + a_proj
+        if entered_sum <= 0:
+            a_over = round(cash_balance * 0.40, 2)
+            a_risk = round(cash_balance * 0.20, 2)
+            a_proj = round(cash_balance * 0.40, 2)
+            norm_note = "No amounts entered; using default split."
+        elif abs(entered_sum - cash_balance) > 1:
+            scale = cash_balance / entered_sum
+            a_over = round(a_over * scale, 2)
+            a_risk = round(a_risk * scale, 2)
+            a_proj = round(a_proj * scale, 2)
+            norm_note = "Adjusted to match total bank balance."
+        else:
+            norm_note = "Exact match."
+
+        st.session_state.alloc_overhead = a_over
+        st.session_state.alloc_risk     = a_risk
+        st.session_state.alloc_projects = a_proj
+
+        alloc_df = pd.DataFrame({
+            "Bucket": ["Overhead","Risk","Projects","Total"],
+            "Amount (₦)": [a_over, a_risk, a_proj, a_over + a_risk + a_proj]
+        })
+        st.dataframe(alloc_df.style.format({"Amount (₦)":"₦{:,.2f}"}), use_container_width=True)
+        st.caption(norm_note)
+
+    with c_left:
+        fig_alloc = go.Figure(go.Pie(
+            labels=["Overhead","Risk","Projects"],
+            values=[a_over, a_risk, a_proj],
+            hole=0.55,
+            textinfo="label+percent",
+            hovertemplate="%{label}<br>₦%{value:,.2f}<extra></extra>"
+        ))
+        fig_alloc.update_layout(margin=dict(l=0,r=0,t=10,b=0))
+        st.plotly_chart(fig_alloc, use_container_width=True, key="alloc_donut")
+
+    st.markdown("---")
+    
 # -----------------------------
 # Upload Center (safe with preview, undo, backups)
 # -----------------------------
@@ -580,7 +636,7 @@ if page == "Executive Overview":
     st.markdown("")
 
     # ---- Cash Allocation (Overhead / Risk / Projects) ----
-    st.subheader("Cash Allocation (of Bank Balance)")
+    st.subheader("Cash Allocation of Bank Balance")
 
     # Defaults once per session
     if "alloc_overhead" not in st.session_state:
