@@ -228,18 +228,15 @@ def compute_driver_deltas(df: pd.DataFrame, topn: int = 3):
 # NAV
 # -----------------------------
 with st.sidebar:
-    page = option_menu(
-        menu_title=None,
-        options=["Executive Overview","Revenue Analysis","Expense & Margin","Cash & Liquidity","Insights","P&L (Table)"],
-        icons=["speedometer2","bar-chart-line","cash-coin","wallet2","lightning","table"],
-        default_index=0,
-        styles={
-            "container": {"padding": "0!important"},
-            "icon": {"font-size": "18px"},
-            "nav-link": {"font-size": "15px", "padding": "10px 8px"},
-            "nav-link-selected": {"background-color": "#f0f2f6"},
-        },
-    )
+    st.markdown("### Quick View")
+    # (optional) keep your year filter and bank-balance override here
+    # Example:
+    years = sorted(tx["year"].dropna().unique())
+    g_year = st.selectbox("Year", ["All"] + list(years), index=len(years) if years else 0, key="quick_year")
+
+# we’re no longer navigating pages via option_menu
+page = "Quick View"
+
 
 # Global Year filter (skip on Revenue page)
 if page != "Revenue Analysis":
@@ -252,6 +249,129 @@ else:
 
 DF = tx if g_year == "All" else tx[tx["year"].eq(int(g_year))]
 MN = monthly_pnl(DF)
+
+with st.sidebar:
+    page = option_menu(
+        menu_title=None,
+        options=[  # add Quick View
+            "Quick View",
+            "Executive Overview","Revenue Analysis","Expense & Margin","Cash & Liquidity","Insights","P&L (Table)"
+        ],
+        icons=["grid", "speedometer2","bar-chart-line","cash-coin","wallet2","lightning","table"],
+        default_index=0,
+        styles={
+            "container": {"padding": "0!important"},
+            "icon": {"font-size": "18px"},
+            "nav-link": {"font-size": "15px", "padding": "10px 8px"},
+            "nav-link-selected": {"background-color": "#f0f2f6"},
+        },
+    )
+
+# -----------------------------
+# QUICK VIEW — zoomed-out dashboard
+# -----------------------------
+if page == "Quick View":
+    st.title("Quick View")
+
+    # Smaller font for this page only
+    st.markdown("""
+    <style>
+      .quick-kpi .metric { font-size: 0.9rem !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ==== Row 1: KPI strip (same logic as Executive Overview) ====
+    k = kpis(DF)
+    total_rev    = float(k.get("Revenue", 0.0))
+    gross_profit = float(k.get("Gross Profit", 0.0))
+    net_profit   = float(k.get("EBIT", 0.0))
+    gp_margin    = (gross_profit / total_rev * 100.0) if total_rev else 0.0
+    np_margin    = (net_profit / total_rev * 100.0) if total_rev else 0.0
+
+    if g_year != "All":
+        prev_year = int(g_year) - 1
+        R_this = DF[DF["account_group"].eq("Revenue")]["signed_amount"].sum()
+        R_prev = tx[(tx["year"].eq(prev_year)) & (tx["account_group"].eq("Revenue"))]["signed_amount"].sum()
+        yoy = ((R_this / R_prev - 1.0) * 100.0) if R_prev else 0.0
+    else:
+        yoy = 0.0
+
+    if not bd.empty:
+        B_slice = bd if g_year == "All" else bd[bd["year"].eq(int(g_year))]
+        b_rev = B_slice[B_slice["account_group"].eq("Revenue")]["budget_amount"].sum()
+        var_vs_budget = total_rev - b_rev
+    else:
+        var_vs_budget = 0.0
+
+    cash_balance = CASH_BALANCE_OVERRIDE
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.markdown(kpi_card_md("Revenue", total_rev, "#16a34a" if total_rev >= 0 else "#ef4444", f"GP% {gp_margin:.1f}%"), unsafe_allow_html=True)
+    c2.markdown(kpi_card_md("GP%", gp_margin, "#2563eb", f"GP {gross_profit:,.0f}"), unsafe_allow_html=True)
+    c3.markdown(kpi_card_md("NP%", np_margin, "#6d28d9", f"NP {net_profit:,.0f}"), unsafe_allow_html=True)
+    c4.markdown(kpi_card_md(CASH_BALANCE_LABEL, cash_balance, "#0ea5e9", ""), unsafe_allow_html=True)
+    c5.markdown(kpi_card_md("YoY Growth", yoy, "#10b981" if yoy >= 0 else "#ef4444", f"vs {int(g_year)-1 if g_year!='All' else 'LY'}"), unsafe_allow_html=True)
+    c6.markdown(kpi_card_md("Var vs Budget", var_vs_budget, "#10b981" if var_vs_budget >= 0 else "#ef4444", "Actual − Budget"), unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ==== Row 2: Revenue trend (mini) + Expense stack (mini) ====
+    r2a, r2b = st.columns(2)
+
+    with r2a:
+        st.subheader("Revenue Trend (mini)")
+        rev_tr = (DF[DF["account_group"].eq("Revenue")]
+                    .groupby(["year","month"], as_index=False)["signed_amount"].sum()
+                    .assign(Period=lambda x: pd.to_datetime(dict(year=x.year, month=x.month, day=1)))
+                    .sort_values("Period"))
+        fig_rev_tr = go.Figure()
+        fig_rev_tr.add_scatter(x=rev_tr["Period"], y=rev_tr["signed_amount"], mode="lines+markers", name="Revenue")
+        fig_rev_tr.update_layout(margin=dict(l=0,r=0,t=10,b=0), height=240, yaxis_title="₦")
+        st.plotly_chart(fig_rev_tr, use_container_width=True, key="qv_rev_trend")
+
+    with r2b:
+        st.subheader("COGS + OPEX (mini)")
+        EXP = DF[DF["account_group"].isin(["COGS","OPEX"])].copy()
+        EXP["abs_amount"] = EXP["signed_amount"].abs()
+        exp_m = (EXP.groupby(["year","month","account_group"], as_index=False)["abs_amount"].sum()
+                   .assign(Period=lambda x: pd.to_datetime(dict(year=x.year, month=x.month, day=1))))
+        fig_exp_mini = go.Figure()
+        for g in ["COGS","OPEX"]:
+            tmp = exp_m[exp_m["account_group"].eq(g)]
+            fig_exp_mini.add_bar(x=tmp["Period"], y=tmp["abs_amount"], name=g)
+        fig_exp_mini.update_layout(barmode="stack", margin=dict(l=0,r=0,t=10,b=0), height=240, yaxis_title="₦")
+        st.plotly_chart(fig_exp_mini, use_container_width=True, key="qv_exp_stack")
+
+    # ==== Row 3: Cash in/out (mini) + P&L snapshot (mini table) ====
+    r3a, r3b = st.columns(2)
+
+    with r3a:
+        st.subheader("Cash In / Out (mini)")
+        CF = cash_in_out(DF)
+        fig_cf = go.Figure()
+        if not CF.empty:
+            fig_cf.add_bar(x=CF["Period"], y=CF["CashIn"], name="In")
+            fig_cf.add_bar(x=CF["Period"], y=CF["CashOut"], name="Out")
+            fig_cf.add_scatter(x=CF["Period"], y=CF["Net"], mode="lines+markers", name="Net")
+        fig_cf.update_layout(barmode="group", margin=dict(l=0,r=0,t=10,b=0), height=240, yaxis_title="₦")
+        st.plotly_chart(fig_cf, use_container_width=True, key="qv_cash")
+
+    with r3b:
+        st.subheader("P&L Snapshot (Totals)")
+        rev_total  = DF[DF["account_group"].eq("Revenue")]["signed_amount"].sum()
+        cogs_total = -DF[DF["account_group"].eq("COGS")]["signed_amount"].sum()
+        opex_total = -DF[DF["account_group"].eq("OPEX")]["signed_amount"].sum()
+        gp_total   = rev_total - cogs_total
+        np_total   = gp_total - opex_total
+        snap = pd.DataFrame({
+            "Line Item": ["Trading Income","Total Cost of Sales","Gross Profit","Total Operating Expenses","Net Profit"],
+            "Amount (₦)": [rev_total, cogs_total, gp_total, opex_total, np_total]
+        })
+        st.dataframe(snap.style.format({"Amount (₦)":"₦{:,.0f}"}),
+                     use_container_width=True, height=240)
+
+    st.caption("Tip: Use the left menu to open any page in full detail.")
+
 
 # -----------------------------
 # Upload Center (safe with preview, undo, backups)
